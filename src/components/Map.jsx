@@ -1,7 +1,7 @@
 import DeckGL from "@deck.gl/react";
 import { Map as MapGL } from "react-map-gl";
 import maplibregl from "maplibre-gl";
-import { PolygonLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { FlyToInterpolator } from "deck.gl";
 import { TripsLayer } from "@deck.gl/geo-layers";
 import { createGeoJSONCircle } from "../helpers";
@@ -9,8 +9,13 @@ import { useEffect, useRef, useState } from "react";
 import { getBoundingBoxFromPolygon, getMapGraph, getNearestNode } from "../services/MapService";
 import PathfindingState from "../models/PathfindingState";
 import Interface from "./Interface";
-import { INITIAL_COLORS, INITIAL_VIEW_STATE, MAP_STYLE } from "../config";
+import { INITIAL_COLORS, INITIAL_VIEW_STATE, MAP_STYLES, DEFAULT_MAP_STYLE } from "../config";
 import useSmoothStateChange from "../hooks/useSmoothStateChange";
+import { tspService } from "../services/tspService";
+import RouteInfo from "./RouteInfo";
+import MapStyleSwitcher from "./MapStyleSwitcher";
+import { pointService } from "../services/pointService";
+import { useAuth } from "../hooks/useAuth";
 
 function Map() {
     const [startNode, setStartNode] = useState(null);
@@ -28,9 +33,13 @@ function Map() {
     const [placeEnd, setPlaceEnd] = useState(false);
     const [placeIntermediate, setPlaceIntermediate] = useState(false);
     const [loading, setLoading] = useState(false);
-    const [settings, setSettings] = useState({ algorithm: "astar", radius: 4, speed: 5 });
+    const [settings, setSettings] = useState({ algorithm: "astar", radius: 4, speed: 5, useTsp: false, tspMethod: "nearest" });
     const [colors, setColors] = useState(INITIAL_COLORS);
     const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
+    const [mapStyle, setMapStyle] = useState(DEFAULT_MAP_STYLE);
+    const [savedPoints, setSavedPoints] = useState([]);
+    
+    const { user, isAuthenticated } = useAuth();
     const ui = useRef();
     const fadeRadius = useRef();
     const requestRef = useRef();
@@ -223,20 +232,92 @@ function Map() {
         return true;
     }
 
-    function startPathfinding() {
-        setFadeRadiusReverse(true);
-        setTimeout(() => {
-            clearPath();
-            currentIntermediateIndex.current = -1;
-            fullPathData.current = [];
-            
-            if (intermediatePoints.length > 0) {
-                processNextRouteSegment();
+    /**
+     * Оптимизирует порядок промежуточных точек, используя выбранный алгоритм TSP
+     */
+    function optimizeRouteOrder() {
+        if (!startNode || !endNode || intermediatePoints.length < 2) {
+            ui.current.showSnack("Для оптимизации необходимы начальная, конечная и минимум 2 промежуточные точки", "info");
+            return;
+        }
+        
+        setLoading(true);
+        
+        try {
+            // Выбираем алгоритм оптимизации в зависимости от настроек
+            let optimizedPoints;
+            if (settings.tspMethod === "2opt") {
+                optimizedPoints = tspService.twoOptSolution(intermediatePoints, startNode, endNode);
             } else {
-                state.current.start(settings.algorithm);
-                setStarted(true);
+                optimizedPoints = tspService.nearestNeighborSolution(intermediatePoints, startNode, endNode);
             }
-        }, 400);
+            
+            // Удаляем начальную и конечную точки, если они есть в результате
+            const filteredPoints = optimizedPoints.filter(
+                point => point.id !== startNode.id && point.id !== endNode.id
+            );
+            
+            // Обновляем промежуточные точки в оптимизированном порядке
+            setIntermediatePoints(filteredPoints);
+            
+            // Выводим сообщение об успешной оптимизации
+            const distanceBefore = tspService.calculateRouteDistance([startNode, ...intermediatePoints, endNode]);
+            const distanceAfter = tspService.calculateRouteDistance([startNode, ...filteredPoints, endNode]);
+            const improvement = ((distanceBefore - distanceAfter) / distanceBefore * 100).toFixed(1);
+            
+            ui.current.showSnack(`Маршрут оптимизирован. Улучшение: ${improvement}%`, "success");
+        } catch (error) {
+            console.error('Ошибка при оптимизации маршрута:', error);
+            ui.current.showSnack("Произошла ошибка при оптимизации маршрута", "error");
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    /**
+     * Обработка автоматической оптимизации при запуске маршрута
+     */
+    function startPathfinding() {
+        // Если включена оптимизация TSP, выполняем её перед запуском
+        if (settings.useTsp && intermediatePoints.length >= 2) {
+            // Сохраняем предыдущие точки для сравнения
+            const prevIntermediatePoints = [...intermediatePoints];
+            
+            // Оптимизируем маршрут
+            optimizeRouteOrder();
+            
+            // Даем небольшую задержку для обновления состояния
+            setTimeout(() => {
+                setFadeRadiusReverse(true);
+                setTimeout(() => {
+                    clearPath();
+                    currentIntermediateIndex.current = -1;
+                    fullPathData.current = [];
+                    
+                    if (intermediatePoints.length > 0) {
+                        processNextRouteSegment();
+                    } else {
+                        state.current.start(settings.algorithm);
+                        setStarted(true);
+                    }
+                }, 400);
+            }, 300);
+        } else {
+            // Стандартный запуск без оптимизации
+            setFadeRadiusReverse(true);
+            setTimeout(() => {
+                clearPath();
+                currentIntermediateIndex.current = -1;
+                fullPathData.current = [];
+                
+                if (intermediatePoints.length > 0) {
+                    processNextRouteSegment();
+                } else {
+                    state.current.start(settings.algorithm);
+                    setStarted(true);
+                }
+            }, 400);
+        }
     }
 
     function processNextRouteSegment() {
@@ -291,7 +372,8 @@ function Map() {
             updatedIntermediatePoints[prevIdx] = {
                 id: fromNode.id,
                 lat: fromNode.latitude || prevPoint.lat,
-                lon: fromNode.longitude || prevPoint.lon
+                lon: fromNode.longitude || prevPoint.lon,
+                stopTime: prevPoint.stopTime || 0
             };
             setIntermediatePoints(updatedIntermediatePoints);
             console.log(`Промежуточная точка ${prevIdx} обновлена на id=${fromNode.id}`);
@@ -311,7 +393,8 @@ function Map() {
                 updatedIntermediatePoints[currentIntermediateIndex.current] = {
                     id: toNode.id,
                     lat: toNode.latitude || currentPoint.lat,
-                    lon: toNode.longitude || currentPoint.lon
+                    lon: toNode.longitude || currentPoint.lon,
+                    stopTime: currentPoint.stopTime || 0
                 };
                 setIntermediatePoints(updatedIntermediatePoints);
                 console.log(`Промежуточная точка ${currentIntermediateIndex.current} обновлена на id=${toNode.id}`);
@@ -563,8 +646,11 @@ function Map() {
     }
 
     function changeSettings(newSettings) {
-        setSettings(newSettings);
-        const items = { settings: newSettings, colors };
+        const updatedSettings = { ...settings, ...newSettings };
+        setSettings(updatedSettings);
+        
+        // Сохраняем обновленные настройки в localStorage
+        const items = { settings: updatedSettings, colors };
         localStorage.setItem("path_settings", JSON.stringify(items));
     }
 
@@ -596,6 +682,9 @@ function Map() {
         clearPath();
 
         try {
+            // Загружаем сохраненные точки для отображения их названий
+            loadSavedPoints();
+            
             // Устанавливаем настройки, если они переданы
             if (savedRoute.settings) {
                 setSettings(savedRoute.settings);
@@ -714,6 +803,18 @@ function Map() {
         timer.current = currentTime;
     }
 
+    function changeMapStyle(style) {
+        setMapStyle(style);
+    }
+
+    // Загрузка точек пользователя
+    const loadSavedPoints = () => {
+        if (isAuthenticated && user && user.id) {
+            const userPoints = pointService.getUserPoints(user.id);
+            setSavedPoints(userPoints);
+        }
+    };
+
     useEffect(() => {
         if(!started) return;
         requestRef.current = requestAnimationFrame(animate);
@@ -726,12 +827,96 @@ function Map() {
         });
 
         const settings = localStorage.getItem("path_settings");
-        if(!settings) return;
-        const items = JSON.parse(settings);
+        if(settings) {
+            const items = JSON.parse(settings);
+            setSettings(items.settings);
+            setColors(items.colors);
+        }
+        
+        // Загружаем сохраненные точки при монтировании компонента
+        loadSavedPoints();
+    }, [isAuthenticated, user]);
 
-        setSettings(items.settings);
-        setColors(items.colors);
-    }, []);
+    // Обновляем сохраненные точки при изменении статуса аутентификации
+    useEffect(() => {
+        if (isAuthenticated && user) {
+            loadSavedPoints();
+        } else {
+            setSavedPoints([]);
+        }
+    }, [isAuthenticated, user]);
+
+    // Функция для поиска сохраненной точки по координатам
+    const findSavedPointByCoordinates = (lat, lon) => {
+        return savedPoints.find(p => 
+            Math.abs(p.lat - lat) < 0.00001 && 
+            Math.abs(p.lon - lon) < 0.00001
+        );
+    };
+
+    // Подготовка данных для TextLayer
+    const getPointLabels = () => {
+        const labels = [];
+        
+        // Проверяем начальную точку
+        if (startNode) {
+            const savedPoint = findSavedPointByCoordinates(startNode.lat, startNode.lon);
+            if (savedPoint && savedPoint.name) {
+                labels.push({
+                    position: [startNode.lon, startNode.lat],
+                    text: savedPoint.name,
+                    pointType: 'start'
+                });
+            }
+        }
+        
+        // Проверяем конечную точку
+        if (endNode) {
+            const savedPoint = findSavedPointByCoordinates(endNode.lat, endNode.lon);
+            if (savedPoint && savedPoint.name) {
+                // Проверяем, не совпадает ли позиция с уже добавленными метками
+                const existingLabel = labels.find(label => 
+                    Math.abs(label.position[0] - endNode.lon) < 0.0001 && 
+                    Math.abs(label.position[1] - endNode.lat) < 0.0001
+                );
+                
+                if (!existingLabel) {
+                    labels.push({
+                        position: [endNode.lon, endNode.lat],
+                        text: savedPoint.name,
+                        pointType: 'end'
+                    });
+                }
+            }
+        }
+        
+        // Проверяем промежуточные точки
+        if (intermediatePoints && intermediatePoints.length > 0) {
+            intermediatePoints.forEach((point, index) => {
+                if (!point) return;
+                
+                const savedPoint = findSavedPointByCoordinates(point.lat, point.lon);
+                if (savedPoint && savedPoint.name) {
+                    // Проверяем, не совпадает ли позиция с уже добавленными метками
+                    const existingLabel = labels.find(label => 
+                        Math.abs(label.position[0] - point.lon) < 0.0001 && 
+                        Math.abs(label.position[1] - point.lat) < 0.0001
+                    );
+                    
+                    if (!existingLabel) {
+                        labels.push({
+                            position: [point.lon, point.lat],
+                            text: savedPoint.name,
+                            pointType: 'intermediate',
+                            pointIndex: index
+                        });
+                    }
+                }
+            });
+        }
+        
+        return labels;
+    };
 
     return (
         <>
@@ -796,13 +981,52 @@ function Map() {
                             }
                         }}
                     />
+                    <TextLayer
+                        id="point-labels"
+                        data={getPointLabels()}
+                        getPosition={d => d.position}
+                        getText={d => String(d.text)}
+                        getSize={14}
+                        getAngle={0}
+                        getTextAnchor="middle"
+                        getAlignmentBaseline="center"
+                        getPixelOffset={[0, -25]} // Смещение текста над точкой
+                        fontFamily="'Roboto', 'Arial', sans-serif"
+                        fontWeight="bold"
+                        background={true}
+                        characterSet="auto"
+                        fontSettings={{
+                            sdf: false,
+                            buffer: 4
+                        }}
+                        getBackgroundColor={d => {
+                            // Разные цвета фона для разных типов точек
+                            if (d.pointType === 'start') return [0, 128, 0, 220]; // Зеленый
+                            if (d.pointType === 'end') return [220, 0, 0, 220]; // Красный
+                            return [255, 165, 0, 220]; // Оранжевый для промежуточных
+                        }}
+                        getColor={[255, 255, 255, 255]} // Белый текст
+                        backgroundPadding={[8, 4]}
+                        outlineWidth={2}
+                        outlineColor={[0, 0, 0, 200]}
+                        wordBreak="break-word"
+                        maxWidth={200}
+                    />
                     <MapGL 
                         reuseMaps mapLib={maplibregl} 
-                        mapStyle={MAP_STYLE} 
+                        mapStyle={mapStyle.url} 
                         doubleClickZoom={false}
                     />
                 </DeckGL>
             </div>
+            <MapStyleSwitcher currentStyle={mapStyle} onStyleChange={changeMapStyle} />
+            <RouteInfo 
+                startNode={startNode}
+                endNode={endNode}
+                intermediatePoints={intermediatePoints}
+                pathInProgress={started && !animationEnded}
+                animationEnded={animationEnded}
+            />
             <Interface 
                 ref={ui}
                 canStart={startNode && endNode}
@@ -818,6 +1042,7 @@ function Map() {
                 maxTime={timer.current}
                 settings={settings}
                 setSettings={changeSettings}
+                onSettingsChange={changeSettings}
                 changeAlgorithm={changeAlgorithm}
                 colors={colors}
                 setColors={changeColors}
@@ -836,8 +1061,9 @@ function Map() {
                 endNode={endNode}
                 loadRoute={loadRoute}
                 directMapClick={direct_mapClick}
+                onOptimize={optimizeRouteOrder}
+                path={fullPathData.current}
             />
-            <div className="attrib-container"><summary className="maplibregl-ctrl-attrib-button" title="Переключить атрибуцию" aria-label="Переключить атрибуцию"></summary><div className="maplibregl-ctrl-attrib-inner">© <a href="https://carto.com/about-carto/" target="_blank" rel="noopener">CARTO</a>, © <a href="http://www.openstreetmap.org/about/" target="_blank">OpenStreetMap</a> авторы</div></div>
         </>
     );
 }

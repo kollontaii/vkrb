@@ -149,9 +149,10 @@ export const routeService = {
      * @param {object} startPoint Начальная точка
      * @param {object} endPoint Конечная точка
      * @param {Array} intermediatePoints Массив промежуточных точек (опционально)
+     * @param {Array} intermediateStopTimes Массив времен остановки для промежуточных точек в минутах (опционально)
      * @returns {boolean} Успешно ли создан маршрут
      */
-    createRouteFromPoints(userId, routeData, startPoint, endPoint, intermediatePoints = []) {
+    createRouteFromPoints(userId, routeData, startPoint, endPoint, intermediatePoints = [], intermediateStopTimes = []) {
         if (!userId || !startPoint || !endPoint) {
             console.error('Не указаны обязательные параметры для создания маршрута');
             return false;
@@ -167,9 +168,10 @@ export const routeService = {
                 lat: endPoint.lat,
                 lon: endPoint.lon
             },
-            intermediatePoints: intermediatePoints.map(point => ({
+            intermediatePoints: intermediatePoints.map((point, index) => ({
                 lat: point.lat,
-                lon: point.lon
+                lon: point.lon,
+                stopTime: intermediateStopTimes[index] || 0
             })),
             settings: routeData.settings || {},
             algorithm: routeData.algorithm || routeData.settings?.algorithm || 'dijkstra'

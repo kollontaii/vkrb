@@ -1,4 +1,23 @@
-export const MAP_STYLE = "./map_style.json";
+export const MAP_STYLE = "./dark_style.json";
+
+// Доступные стили карты
+export const MAP_STYLES = {
+    dark: {
+        id: "dark",
+        name: "Темная",
+        url: "./dark_style.json",
+        showBuildings: false
+    },
+    light: {
+        id: "light",
+        name: "Светлая",
+        url: "./light_style.json",
+        showBuildings: false
+    }
+};
+
+// Стиль карты по умолчанию
+export const DEFAULT_MAP_STYLE = MAP_STYLES.dark;
 
 export const INITIAL_VIEW_STATE = {
     longitude: -0.127,

@@ -1,6 +1,6 @@
-import { Button, IconButton, Typography, Snackbar, Alert, CircularProgress, Fade, Tooltip, Drawer, MenuItem, Select, InputLabel, FormControl, Menu, Backdrop, Stepper, Step, StepLabel, TextField, Dialog, DialogActions, DialogContent, DialogTitle, Avatar, ListItemIcon, Divider, Box } from "@mui/material";
+import { Button, IconButton, Typography, Snackbar, Alert, CircularProgress, Fade, Tooltip, Drawer, MenuItem, Select, InputLabel, FormControl, Menu, Backdrop, Stepper, Step, StepLabel, TextField, Dialog, DialogActions, DialogContent, DialogTitle, Avatar, ListItemIcon, Divider, Box, Switch, FormControlLabel, FormGroup, FormLabel, RadioGroup, Radio } from "@mui/material";
 import { MuiColorInput } from "mui-color-input";
-import { PlayArrow, Settings, Movie, Pause, Replay, Save, Bookmark, AccountCircle, Logout, Person, Close as CloseIcon, LocationOn } from "@mui/icons-material";
+import { PlayArrow, Settings, Movie, Pause, Replay, Save, Bookmark, AccountCircle, Logout, Person, Close as CloseIcon, LocationOn, Route, ShuffleOn } from "@mui/icons-material";
 import Slider from "./Slider";
 import { useState, useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import { INITIAL_COLORS, LOCATIONS } from "../config";
@@ -10,6 +10,7 @@ import { routeService } from "../services/routeService";
 import { pointService } from "../services/pointService";
 import SavedRoutes from "./SavedRoutes";
 import SavedPoints from "./SavedPoints";
+import RouteOptimizer from "./RouteOptimizer";
 
 // Компонент формы входа
 function LoginForm({ onSuccess, onToggleForm }) {
@@ -218,7 +219,7 @@ function RegisterForm({ onSuccess, onToggleForm }) {
     );
 }
 
-const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, time, maxTime, settings, colors, loading, timeChanged, cinematic, placeEnd, changeRadius, changeAlgorithm, setPlaceEnd, setCinematic, setSettings, setColors, startPathfinding, toggleAnimation, clearPath, changeLocation, startNode, endNode, loadRoute, placeIntermediate, setPlaceIntermediate, intermediatePoints, directMapClick, onAddIntermediatePoint }, ref) => {
+const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, time, maxTime, settings, colors, loading, timeChanged, cinematic, placeEnd, changeRadius, changeAlgorithm, setPlaceEnd, setCinematic, setSettings, setColors, startPathfinding, toggleAnimation, clearPath, changeLocation, startNode, endNode, loadRoute, placeIntermediate, setPlaceIntermediate, intermediatePoints, directMapClick, onAddIntermediatePoint, onNodeHover, onNodeClick, onLocationChange, onSettingsChange, onToggleAnimation, onStart, onPlaceEnd, onPlaceIntermediate, onClear, onClearIntermediate, onColorsChange, onLoadRoute, onOptimize, path }, ref) => {
     const [sidebar, setSidebar] = useState(false);
     const [snack, setSnack] = useState({
         open: false,
@@ -237,6 +238,8 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
     // Состояния для работы с маршрутами
     const [saveRouteDialogOpen, setSaveRouteDialogOpen] = useState(false);
     const [routeName, setRouteName] = useState('');
+    const [routeTag, setRouteTag] = useState('none');
+    const [routeCustomTag, setRouteCustomTag] = useState('');
     const [savedRoutesDrawerOpen, setSavedRoutesDrawerOpen] = useState(false);
     
     // Состояния для работы с точками
@@ -337,16 +340,27 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
 
     // Новые функции для работы с маршрутами
     const handleSaveRouteClick = () => {
-        if (!isAuthenticated) {
-            setSnack({ open: true, message: "Авторизуйтесь, чтобы сохранять маршруты", type: "info" });
+        if (!path || !startNode || !endNode) {
+            setSnack({
+                open: true,
+                message: "Невозможно сохранить: не найден путь между точками",
+                type: "error"
+            });
             return;
         }
         
-        if (!startNode || !endNode) {
-            setSnack({ open: true, message: "Создайте маршрут для сохранения", type: "warning" });
+        if (!user) {
+            setSnack({
+                open: true,
+                message: "Для сохранения маршрута необходимо авторизоваться",
+                type: "warning"
+            });
             return;
         }
         
+        setRouteName('');
+        setRouteTag('none');
+        setRouteCustomTag('');
         setSaveRouteDialogOpen(true);
     };
     
@@ -375,7 +389,9 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
                 lon: point.lon
             })),
             settings,
-            algorithm: settings.algorithm
+            algorithm: settings.algorithm,
+            tag: routeTag,
+            customTag: routeTag === 'custom' ? routeCustomTag : ''
         };
         
         console.log('Сохраняем маршрут:', route, 'для пользователя:', user.id);
@@ -388,6 +404,8 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
         
         setSaveRouteDialogOpen(false);
         setRouteName('');
+        setRouteTag('none');
+        setRouteCustomTag('');
     };
     
     const handleOpenSavedRoutes = () => {
@@ -622,11 +640,21 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
         }
     };
 
+    // Обработчик изменения настроек оптимизации
+    const handleTspChange = (e) => {
+        onSettingsChange({ useTsp: e.target.checked });
+    };
+
+    // Обработчик изменения метода оптимизации
+    const handleTspMethodChange = (e) => {
+        onSettingsChange({ tspMethod: e.target.value });
+    };
+
     return (
         <>
             <div className={`nav-top ${cinematic ? "cinematic" : ""}`}>
                 <div className="side slider-container">
-                    <Typography id="playback-slider" gutterBottom>
+                    <Typography id="playback-slider" gutterBottom style={{ fontSize: '0.9rem' }}>
                         Управление анимацией
                     </Typography>
                     <Slider disabled={!animationEnded}  value={animationEnded ? time : maxTime} min={animationEnded ? 0 : -1} max={maxTime} onChange={(e) => {timeChanged(Number(e.target.value));}} className="slider" aria-labelledby="playback-slider" />
@@ -671,7 +699,7 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
                 </Tooltip>
                 <Tooltip title="Сохраненные маршруты">
                     <IconButton onClick={handleOpenSavedRoutes} style={{ backgroundColor: "#2A2B37", width: 36, height: 36 }} size="large">
-                        <Bookmark style={{ color: "#fff", width: 22, height: 22 }} fontSize="inherit" />
+                        <Route style={{ color: "#fff", width: 22, height: 22 }} fontSize="inherit" />
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Сохранить точку">
@@ -681,8 +709,7 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
                 </Tooltip>
                 <Tooltip title="Сохраненные точки">
                     <IconButton onClick={handleOpenSavedPoints} style={{ backgroundColor: "#2A2B37", width: 36, height: 36 }} size="large">
-                        <LocationOn style={{ color: "#fff", width: 18, height: 18, marginRight: -5 }} fontSize="inherit" />
-                        <Bookmark style={{ color: "#fff", width: 15, height: 15, position: "relative", top: -2, left: -5 }} fontSize="inherit" />
+                        <Bookmark style={{ color: "#fff", width: 22, height: 22 }} fontSize="inherit" />
                     </IconButton>
                 </Tooltip>
                 <Tooltip title="Открыть настройки">
@@ -981,6 +1008,16 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
                             </Button>
                         </div>
                     </div>
+                    
+                    {/* Компонент оптимизации маршрута */}
+                    <RouteOptimizer 
+                        settings={settings}
+                        onSettingsChange={onSettingsChange}
+                        onOptimize={onOptimize}
+                        startNode={startNode}
+                        endNode={endNode}
+                        intermediatePoints={intermediatePoints}
+                    />
 
                     {intermediatePoints && intermediatePoints.length > 0 && (
                         <div className="intermediate-points-container">
@@ -1118,7 +1155,34 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
                         fullWidth
                         value={routeName}
                         onChange={(e) => setRouteName(e.target.value)}
+                        sx={{ mb: 2 }}
                     />
+                    
+                    <FormControl fullWidth sx={{ mb: 2 }}>
+                        <FormLabel>Тег маршрута</FormLabel>
+                        <RadioGroup
+                            value={routeTag}
+                            onChange={(e) => setRouteTag(e.target.value)}
+                        >
+                            <FormControlLabel value="none" control={<Radio />} label="Без тега" />
+                            <FormControlLabel value="regular" control={<Radio />} label="Регулярный" />
+                            <FormControlLabel value="single" control={<Radio />} label="Разовый" />
+                            <FormControlLabel value="custom" control={<Radio />} label="Кастомный" />
+                        </RadioGroup>
+                    </FormControl>
+                    
+                    {routeTag === 'custom' && (
+                        <TextField
+                            margin="dense"
+                            label="Название тега"
+                            type="text"
+                            fullWidth
+                            variant="outlined"
+                            value={routeCustomTag}
+                            onChange={(e) => setRouteCustomTag(e.target.value)}
+                            placeholder="Например: Рабочий, Выходной, Отпуск"
+                        />
+                    )}
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setSaveRouteDialogOpen(false)}>Отмена</Button>
@@ -1127,7 +1191,7 @@ const Interface = forwardRef(({ canStart, started, animationEnded, playbackOn, t
             </Dialog>
             
             {/* Компонент сохраненных маршрутов */}
-                        <SavedRoutes
+            <SavedRoutes
                 open={savedRoutesDrawerOpen}
                 onClose={() => setSavedRoutesDrawerOpen(false)}
                 onSelectRoute={handleSelectRoute}
